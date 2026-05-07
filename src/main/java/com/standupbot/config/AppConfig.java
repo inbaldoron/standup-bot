@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.standupbot.controller.ReportController;
+import com.standupbot.controller.SlackController;
 import com.standupbot.controller.UpdateController;
 import com.standupbot.repository.EntryRepository;
 import com.standupbot.repository.InMemoryEntryRepository;
@@ -37,6 +38,7 @@ public class AppConfig {
 
         UpdateController updateController = new UpdateController(repository);
         ReportController reportController = new ReportController(repository, reportService, trelloService);
+        SlackController slackController = new SlackController(repository, reportService, trelloService);
 
         ObjectMapper mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
@@ -44,7 +46,8 @@ public class AppConfig {
 
         return Javalin.create(config -> config.jsonMapper(new JavalinJackson(mapper, true)))
                 .post("/update", updateController::submit)
-                .get("/report", reportController::get);
+                .get("/report", reportController::get)
+                .post("/slack/events", slackController::events);
     }
 
     private static boolean isPresent(String v) {

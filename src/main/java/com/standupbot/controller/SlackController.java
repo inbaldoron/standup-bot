@@ -40,33 +40,55 @@ public class SlackController {
     }
 
     public void events(Context ctx) {
+        log.info(">>> POST /slack/events called");
         try {
-            JsonNode body = mapper.readTree(ctx.body());
-            String type = body.path("type").asText();
+            String rawBody = ctx.body();
+            log.info("Raw body: {}", rawBody);
 
-            // Slack sends this once to verify the endpoint URL
+            JsonNode body = mapper.readTree(rawBody);
+            String type = body.path("type").asText();
+            log.info("Event type: {}", type);
+
             if ("url_verification".equals(type)) {
+                log.info("URL verification challenge received");
                 ctx.result(body.path("challenge").asText());
                 return;
             }
 
-            // Acknowledge immediately — Slack requires a 200 within 3 seconds
             ctx.status(HttpStatus.OK);
 
             if ("event_callback".equals(type)) {
                 JsonNode event = body.path("event");
                 String eventType = event.path("type").asText();
+                String botId = event.path("bot_id").asText(null);
+                log.info("event.type={} bot_id={} text={} channel={}",
+                        eventType, botId, event.path("text").asText(), event.path("channel").asText());
 
-                // Respond to direct mentions: @BotName <message>
-                if ("app_mention".equals(eventType)) {
+                // Ignore messages sent by bots (including ourselves) to avoid loops
+                if (botId != null) {
+                    log.warn("DROPPING: message has bot_id={} — skipping to avoid loops", botId);
+                    return;
+                }
+
+                if ("app_mention".equals(eventType) || "message".equals(eventType)) {
                     String channel = event.path("channel").asText();
                     String rawText = event.path("text").asText();
-                    // Strip the @mention prefix
+                    // Only respond to messages that actually mention the bot
+                    if (!rawText.contains("<@")) {
+                        log.warn("DROPPING: message has no @mention in text='{}'", rawText);
+                        return;
+                    }
                     String userMessage = rawText.replaceAll("<@[A-Z0-9]+>", "").trim();
+                    log.info("Handling {}. channel={} userMessage={}", eventType, channel, userMessage);
 
                     String replyText = handleMessage(userMessage);
+                    log.info("Reply text: {}", replyText);
                     postMessage(channel, replyText);
+                } else {
+                    log.info("Unhandled event type: {}", eventType);
                 }
+            } else {
+                log.info("Unhandled top-level type: {}", type);
             }
 
         } catch (Exception e) {
@@ -105,6 +127,8 @@ public class SlackController {
             log.warn("SLACK_BOT_TOKEN not set — cannot post reply");
             return;
         }
+        log.info("Posting to channel={} token={}...{}", channel,
+                botToken.substring(0, 10), botToken.substring(botToken.length() - 4));
         try {
             String payload = mapper.writeValueAsString(Map.of("channel", channel, "text", text));
             HttpRequest req = HttpRequest.newBuilder()

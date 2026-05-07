@@ -78,10 +78,12 @@ public class SlackController {
                         log.warn("DROPPING: message has no @mention in text='{}'", rawText);
                         return;
                     }
+                    String userId = event.path("user").asText();
+                    String displayName = fetchDisplayName(userId);
                     String userMessage = rawText.replaceAll("<@[A-Z0-9]+>", "").trim();
-                    log.info("Handling {}. channel={} userMessage={}", eventType, channel, userMessage);
+                    log.info("Handling {}. channel={} user={} displayName={} userMessage={}", eventType, channel, userId, displayName, userMessage);
 
-                    String replyText = handleMessage(userMessage);
+                    String replyText = handleMessage(userId, displayName, userMessage);
                     log.info("Reply text: {}", replyText);
                     postMessage(channel, replyText);
                 } else {
@@ -97,14 +99,24 @@ public class SlackController {
         }
     }
 
-    private String handleMessage(String message) {
+    private String handleMessage(String userId, String displayName, String message) {
         String lower = message.toLowerCase();
+
+        if (lower.startsWith("update")) {
+            String summary = message.substring("update".length()).trim();
+            if (summary.isBlank()) {
+                return "Please include your update. Example: `@bot update finished the auth PR, reviewing today`";
+            }
+            repository.add(displayName, summary);
+            log.info("Stored standup entry for user={} displayName={}", userId, displayName);
+            return "Got it, <@" + userId + ">! Your update has been recorded.";
+        }
 
         if (lower.contains("report") || lower.contains("summary") || lower.contains("standup")) {
             List<StandupEntry> entries = repository.all();
             List<TrelloActivity> activity = trelloService.recentActivity();
             if (entries.isEmpty()) {
-                return "No standup entries yet. Submit updates via `POST /update` first.";
+                return "No standup entries yet. Mention me with `update <your update>` to submit one.";
             }
             return reportService.generate(entries, activity);
         }
@@ -112,12 +124,38 @@ public class SlackController {
         if (lower.contains("help")) {
             return """
                     *Standup Bot commands* (mention me + one of these):
+                    • `update <your update>` — submit your daily standup update
                     • `report` — generate today's standup report
                     • `help` — show this message
                     """;
         }
 
-        return "I didn't understand that. Try mentioning me with `report` or `help`.";
+        return "I didn't understand that. Try mentioning me with `update <text>`, `report`, or `help`.";
+    }
+
+    private String fetchDisplayName(String userId) {
+        String botToken = System.getProperty("SLACK_BOT_TOKEN", System.getenv("SLACK_BOT_TOKEN"));
+        if (botToken == null || botToken.isBlank()) {
+            log.warn("SLACK_BOT_TOKEN not set — cannot fetch user display name");
+            return userId;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("https://slack.com/api/users.info?user=" + userId))
+                    .header("Authorization", "Bearer " + botToken)
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode user = mapper.readTree(resp.body()).path("user");
+            String displayName = user.path("profile").path("display_name").asText("").trim();
+            if (displayName.isBlank()) {
+                displayName = user.path("real_name").asText("").trim();
+            }
+            return displayName.isBlank() ? userId : displayName;
+        } catch (Exception e) {
+            log.warn("Failed to fetch display name for user={}, falling back to userId", userId, e);
+            return userId;
+        }
     }
 
     private void postMessage(String channel, String text) {
